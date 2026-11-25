@@ -6,6 +6,8 @@
 #   make raw | make staging | make current          one layer (also takes DATASET=...)
 #   make query                                      DuckDB SQL prompt on the current layer
 #   make query SQL="select count(*) from weather_daily"
+#   make query FILE=queries/top20_current.sql       run a saved .sql file
+#   make sample                                     top 20 rows of every current table
 #   make pipeline PIPELINE_CONFIG=config/other.yaml use a config file directly
 
 DATASET         ?= weather
@@ -23,7 +25,7 @@ QUERY_SCRIPT   := tools/query_current.py
 LAYER ?= current
 
 .DEFAULT_GOAL := help
-.PHONY: help build raw staging current pipeline all query test shell bash
+.PHONY: help build raw staging current pipeline all query sample test shell bash
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -49,8 +51,11 @@ pipeline: ## Run raw -> staging -> current for DATASET
 all: ## Run the pipeline for every dataset in DATASETS
 	@for d in $(DATASETS); do $(MAKE) pipeline DATASET=$$d PIPELINE_CONFIG=config/$$d.yaml || exit 1; done
 
-query: ## DuckDB SQL on the current layer (SQL="..." to run one query, LAYER=staging for staging)
-	$(RUN) $(QUERY_SCRIPT) --layer $(LAYER) $(if $(SQL),-c "$(SQL)")
+query: ## DuckDB SQL on the current layer (SQL="..." one query, FILE=x.sql a file, LAYER=staging)
+	$(RUN) $(QUERY_SCRIPT) --layer $(LAYER) $(if $(SQL),-c "$(SQL)") $(if $(FILE),-f "$(FILE)")
+
+sample: ## Top 20 rows from each current table (queries/top20_current.sql)
+	$(MAKE) query FILE=queries/top20_current.sql
 
 test: ## Run the test suite
 	$(RUN) -m pytest
