@@ -42,15 +42,24 @@ raw:
   dir: data/10_raw/weather
   file_prefix: weather        # files land as <file_prefix>_<lat>_<lon>.csv
 
-# --- 20_staging layer -----------------------------------------------------------
+# --- Lakehouse: one Iceberg catalog shared by all table layers -----------------
+lakehouse:
+  catalog_name: local
+  catalog_db: data/catalog.db
+  root: data                  # each table lives at <root>/<layer dir>/<table>
+
+# --- 20_staging layer: full SCD Type 2 history ------------------------------------
 staging:
-  catalog:
-    name: local
-    db: data/20_staging/catalog.db
-    warehouse: data/20_staging/warehouse
+  dir: 20_staging
   namespace: staging
   table: weather_daily
   watermark_property: staging.last_batch_id
   key_columns: [latitude, longitude, date]   # one row per location per day
   coord_decimals: 4                          # stabilise float coordinates so keys compare reliably
   measure_decimals: 4                        # strip float32 noise so record hashes are stable
+
+# --- 30_current layer: latest version of every staging record -------------------
+current:
+  dir: 30_current
+  namespace: current
+  table: weather_daily

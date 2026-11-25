@@ -35,12 +35,11 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
-from pyiceberg.catalog.sql import SqlCatalog
-from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import EqualTo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 from config import CONFIG, PROJECT_ROOT, resolve  # noqa: E402
+from lakehouse import SCD_COLUMNS, get_catalog, load_or_create_table, table_name  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Settings from config
@@ -51,10 +50,7 @@ RAW_DIR = resolve(CONFIG["raw"]["dir"])
 RAW_FILE_GLOB = f"{CONFIG['raw']['file_prefix']}_*.csv"
 BATCH_ID_FORMAT = CONFIG["batch_id_format"]
 
-CATALOG_NAME = _staging["catalog"]["name"]
-CATALOG_DB = resolve(_staging["catalog"]["db"])
-WAREHOUSE_DIR = resolve(_staging["catalog"]["warehouse"])
-TABLE_IDENTIFIER = (_staging["namespace"], _staging["table"])
+TABLE_NAME = table_name(_staging)
 WATERMARK_PROPERTY = _staging["watermark_property"]
 
 # Business key, e.g. one row per location per day
@@ -66,8 +62,6 @@ DAILY_VARIABLES = CONFIG["daily_variables"]
 ATTRIBUTE_COLUMNS = ["elevation", *DAILY_VARIABLES]
 TIMESTAMP_COLUMNS = [name for name, kind in DAILY_VARIABLES.items() if kind == "timestamp"]
 MEASURE_COLUMNS = [c for c in ATTRIBUTE_COLUMNS if c not in TIMESTAMP_COLUMNS]
-
-SCD_COLUMNS = ["record_hash", "valid_from", "valid_to", "is_current", "batch_id", "source_file"]
 
 COORD_DECIMALS = _staging["coord_decimals"]
 MEASURE_DECIMALS = _staging["measure_decimals"]
@@ -92,19 +86,8 @@ ALL_COLUMNS = ARROW_SCHEMA.names
 # Iceberg
 # ---------------------------------------------------------------------------
 def get_table():
-	"""Open (or create) the local SQL-backed Iceberg catalog and the staging table."""
-	WAREHOUSE_DIR.mkdir(parents = True, exist_ok = True)
-	catalog = SqlCatalog(
-		CATALOG_NAME,
-		uri = f"sqlite:///{CATALOG_DB}",
-		warehouse = WAREHOUSE_DIR.as_uri(),
-	)
-	catalog.create_namespace_if_not_exists(TABLE_IDENTIFIER[0])
-	try:
-		return catalog.load_table(TABLE_IDENTIFIER)
-	except NoSuchTableError:
-		print(f"Creating Iceberg table {'.'.join(TABLE_IDENTIFIER)}")
-		return catalog.create_table(TABLE_IDENTIFIER, schema = ARROW_SCHEMA)
+	"""Open (or create) the staging table in the shared lakehouse catalog."""
+	return load_or_create_table(get_catalog(), _staging, ARROW_SCHEMA)
 
 
 def to_arrow(df: pd.DataFrame) -> pa.Table:
@@ -277,7 +260,7 @@ def main():
 
 	total = table.scan().to_arrow().num_rows
 	current = len(load_current_rows(table))
-	print(f"\nTable {'.'.join(TABLE_IDENTIFIER)}: {total} rows, {current} current")
+	print(f"\nTable {TABLE_NAME}: {total} rows, {current} current")
 
 
 if __name__ == "__main__":
