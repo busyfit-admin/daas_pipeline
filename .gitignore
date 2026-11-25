@@ -1,0 +1,25 @@
+# --- Data -------------------------------------------------------------------
+# Ignore everything generated under data/ (raw CSVs, parquet, API cache, ...)
+# but keep the folder structure via .gitkeep files.
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# Data files anywhere in the repo
+*.parquet
+*.csv
+
+# Open-Meteo / requests-cache files
+*.sqlite
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# --- Environment / OS -------------------------------------------------------
+.env
+.DS_Store
