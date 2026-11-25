@@ -1,0 +1,11 @@
+# Shared settings for every dataset pipeline. Each dataset config (config/<dataset>.yaml)
+# is merged on top of this file, so a dataset can override any key here.
+
+# Raw batch folder names; every layer uses this to name and recognise batches
+batch_id_format: "%Y%m%dT%H%M%SZ"
+
+# --- Lakehouse: one Iceberg catalog shared by all datasets and table layers -----
+lakehouse:
+  catalog_name: local
+  catalog_db: data/catalog.db
+  root: data                  # each table lives at <root>/<layer dir>/<table>

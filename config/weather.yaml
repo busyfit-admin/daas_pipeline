@@ -1,10 +1,7 @@
-# Weather pipeline configuration: the single place for all pipeline settings.
-# Paths are relative to the project root. Select another file with PIPELINE_CONFIG=...
+# Weather pipeline configuration (merged on top of config/base.yaml).
+# Paths are relative to the project root. Run with: make pipeline DATASET=weather
 
 dataset: weather
-
-# Raw batch folder names; both layers use this to name and recognise batches
-batch_id_format: "%Y%m%dT%H%M%SZ"
 
 # --- Source API -------------------------------------------------------------
 api:
@@ -39,14 +36,9 @@ daily_variables:
 
 # --- 10_raw layer ---------------------------------------------------------------
 raw:
+  script: pipeline_layers/10_ingest/weather_api.py
   dir: data/10_raw/weather
   file_prefix: weather        # files land as <file_prefix>_<lat>_<lon>.csv
-
-# --- Lakehouse: one Iceberg catalog shared by all table layers -----------------
-lakehouse:
-  catalog_name: local
-  catalog_db: data/catalog.db
-  root: data                  # each table lives at <root>/<layer dir>/<table>
 
 # --- 20_staging layer: full SCD Type 2 history ------------------------------------
 staging:
@@ -55,8 +47,23 @@ staging:
   table: weather_daily
   watermark_property: staging.last_batch_id
   key_columns: [latitude, longitude, date]   # one row per location per day
-  coord_decimals: 4                          # stabilise float coordinates so keys compare reliably
-  measure_decimals: 4                        # strip float32 noise so record hashes are stable
+  # Data columns in table order, with types: string | float | int | bool | date | timestamp
+  columns:
+    latitude: float
+    longitude: float
+    date: date
+    elevation: float
+    sunrise: timestamp
+    sunset: timestamp
+    rain_sum: float
+    temperature_2m_max: float
+    temperature_2m_min: float
+  float_decimals: 4          # stabilise coordinates and strip float32 noise so hashes are stable
+  # Rows where all of these are null carry no measurements and are dropped
+  drop_if_all_null: [sunrise, sunset, rain_sum, temperature_2m_max, temperature_2m_min]
+  checks:
+    non_negative: [rain_sum]                                  # negative values are nulled
+    less_or_equal: [[temperature_2m_min, temperature_2m_max]] # violations are reported
 
 # --- 30_current layer: latest version of every staging record -------------------
 current:

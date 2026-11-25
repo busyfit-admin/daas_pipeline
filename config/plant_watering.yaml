@@ -1,0 +1,54 @@
+# Plant watering pipeline configuration (merged on top of config/base.yaml).
+# Paths are relative to the project root. Run with: make pipeline DATASET=plant_watering
+#
+# The raw layer simulates one watering per plant for the run's date, with new random
+# values on every run. Re-running on the same day changes the values for the same
+# (plant_id, date) key, so staging keeps every version (SCD Type 2) and current shows the latest.
+
+dataset: plant_watering
+
+# --- Source: simulated backyard plants ------------------------------------------
+source:
+  seed: null                 # set an integer for reproducible values; null = new values every run
+  soil_moisture_pct: [10, 60]
+  plants:
+    - {id: P01, name: Tomato,     type: vegetable,  location: veggie bed,   min_ml: 400,  max_ml: 900}
+    - {id: P02, name: Basil,      type: herb,       location: patio pot,    min_ml: 100,  max_ml: 250}
+    - {id: P03, name: Rose,       type: flower,     location: front border, min_ml: 500,  max_ml: 1200}
+    - {id: P04, name: Lemon tree, type: fruit tree, location: back corner,  min_ml: 2000, max_ml: 5000}
+    - {id: P05, name: Lavender,   type: shrub,      location: side path,    min_ml: 150,  max_ml: 400}
+    - {id: P06, name: Strawberry, type: fruit,      location: raised bed,   min_ml: 200,  max_ml: 500}
+    - {id: P07, name: Hydrangea,  type: shrub,      location: shade bed,    min_ml: 800,  max_ml: 1800}
+
+# --- 10_raw layer ---------------------------------------------------------------
+raw:
+  script: pipeline_layers/10_ingest/plant_watering.py
+  dir: data/10_raw/plant_watering
+  file_prefix: plant_watering        # files land as <file_prefix>_<plant_id>.csv
+
+# --- 20_staging layer: full SCD Type 2 history ------------------------------------
+staging:
+  dir: 20_staging
+  namespace: staging
+  table: plant_watering_daily
+  watermark_property: staging.last_batch_id
+  key_columns: [plant_id, date]      # one watering record per plant per day
+  columns:
+    plant_id: string
+    date: date
+    plant_name: string
+    plant_type: string
+    location: string
+    watered_at: timestamp
+    water_ml: float
+    soil_moisture_pct: float
+  float_decimals: 1
+  drop_if_all_null: [watered_at, water_ml]
+  checks:
+    non_negative: [water_ml, soil_moisture_pct]
+
+# --- 30_current layer: latest version of every staging record -------------------
+current:
+  dir: 30_current
+  namespace: current
+  table: plant_watering_daily

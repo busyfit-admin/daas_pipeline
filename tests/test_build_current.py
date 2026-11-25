@@ -7,7 +7,7 @@ import pytest
 
 import build_current as bc
 import lakehouse
-import weather_staging as ws
+import build_staging as ws
 from config import CONFIG
 from test_weather_staging import BATCH_1, BATCH_2, raw_row, stage, ts
 

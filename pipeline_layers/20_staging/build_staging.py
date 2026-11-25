@@ -1,18 +1,21 @@
 """
-Staging layer: load raw weather batches into an Iceberg table with SCD Type 2 history.
+Staging layer: load raw batches of any dataset into an Iceberg table with SCD Type 2 history.
 
-  data/10_raw/weather/<batch_id>/*.csv  ->  Iceberg table staging.weather_daily
+Dataset-agnostic: folders, table, business key, column types and checks all come from
+the pipeline config (raw + staging sections), selected with PIPELINE_CONFIG.
+
+  <raw.dir>/<batch_id>/<raw.file_prefix>_*.csv  ->  Iceberg table <staging.namespace>.<staging.table>
 
 For each new raw batch (oldest first):
   1. read all CSVs in the batch folder
-  2. clean them (types, rounding, nulls, duplicates, sanity checks)
+  2. clean them (types, rounding, nulls, duplicates, configured checks)
   3. compare with the current rows in the table, by business key + record_hash
   4. apply SCD Type 2 in a single Iceberg transaction:
        - new key         -> insert as current version
        - changed values  -> close the current version, insert a new current version
        - unchanged       -> nothing
-     Keys missing from a batch are NOT closed: each raw batch only covers a rolling
-     window of days, so absence does not mean the record was deleted.
+     Keys missing from a batch are NOT closed: a raw batch may only cover part of the
+     data (e.g. a rolling window of days), so absence does not mean the record was deleted.
 
 SCD columns:
   record_hash  sha256 of the tracked attribute values (detects changes)
@@ -22,9 +25,7 @@ SCD columns:
   batch_id     raw batch folder that produced this version
   source_file  raw CSV the version came from (relative to the project root)
 
-All settings (folders, catalog, table, keys, variables) come from config/weather.yaml.
-
-Processed batches are tracked with the table property "staging.last_batch_id", so
+Processed batches are tracked with the table property in staging.watermark_property, so
 re-runs only pick up newer batches and old batches are never replayed over newer data.
 """
 
@@ -53,23 +54,40 @@ BATCH_ID_FORMAT = CONFIG["batch_id_format"]
 TABLE_NAME = table_name(_staging)
 WATERMARK_PROPERTY = _staging["watermark_property"]
 
-# Business key, e.g. one row per location per day
-KEY_COLUMNS = list(_staging["key_columns"])
-
-# Tracked attributes: a change in any of these creates a new SCD version.
-# elevation comes from the ingest layer's location columns; the rest are the API variables.
-DAILY_VARIABLES = CONFIG["daily_variables"]
-ATTRIBUTE_COLUMNS = ["elevation", *DAILY_VARIABLES]
-TIMESTAMP_COLUMNS = [name for name, kind in DAILY_VARIABLES.items() if kind == "timestamp"]
-MEASURE_COLUMNS = [c for c in ATTRIBUTE_COLUMNS if c not in TIMESTAMP_COLUMNS]
-
-COORD_DECIMALS = _staging["coord_decimals"]
-MEASURE_DECIMALS = _staging["measure_decimals"]
-
 TS = pa.timestamp("us", tz = "UTC")
+ARROW_TYPES = {
+	"string": pa.string(),
+	"float": pa.float64(),
+	"int": pa.int64(),
+	"bool": pa.bool_(),
+	"date": pa.date32(),
+	"timestamp": TS,
+}
+
+# Data columns (name -> type) in table order, and the business key
+COLUMN_TYPES = dict(_staging["columns"])
+unknown = {c: t for c, t in COLUMN_TYPES.items() if t not in ARROW_TYPES}
+if unknown:
+	raise ValueError(f"Unknown column types in config: {unknown}; use one of {sorted(ARROW_TYPES)}")
+KEY_COLUMNS = list(_staging["key_columns"])
+if set(KEY_COLUMNS) - set(COLUMN_TYPES):
+	raise ValueError(f"key_columns {sorted(set(KEY_COLUMNS) - set(COLUMN_TYPES))} are not in staging.columns")
+
+# Tracked attributes: a change in any of these creates a new SCD version
+ATTRIBUTE_COLUMNS = [c for c in COLUMN_TYPES if c not in KEY_COLUMNS]
+
+def columns_of(kind: str) -> list[str]:
+	return [c for c, t in COLUMN_TYPES.items() if t == kind]
+
+TIMESTAMP_COLUMNS = columns_of("timestamp")
+FLOAT_COLUMNS = columns_of("float")
+
+FLOAT_DECIMALS = _staging.get("float_decimals")  # strip float noise so hashes are stable
+DROP_IF_ALL_NULL = _staging.get("drop_if_all_null") or ATTRIBUTE_COLUMNS
+CHECKS = _staging.get("checks") or {}
+
 ARROW_SCHEMA = pa.schema(
-	[("latitude", pa.float64()), ("longitude", pa.float64()), ("date", pa.date32())]
-	+ [(c, TS if c in TIMESTAMP_COLUMNS else pa.float64()) for c in ATTRIBUTE_COLUMNS]
+	[(c, ARROW_TYPES[t]) for c, t in COLUMN_TYPES.items()]
 	+ [
 		("record_hash", pa.string()),
 		("valid_from", TS),
@@ -80,6 +98,7 @@ ARROW_SCHEMA = pa.schema(
 	]
 )
 ALL_COLUMNS = ARROW_SCHEMA.names
+assert ALL_COLUMNS[len(COLUMN_TYPES):] == SCD_COLUMNS
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +141,8 @@ def is_batch_id(name: str) -> bool:
 def read_batch(batch_dir: Path) -> pd.DataFrame:
 	frames = []
 	for csv_path in sorted(batch_dir.glob(RAW_FILE_GLOB)):
-		df = pd.read_csv(csv_path)
+		# Read everything as text; clean() casts each column to its configured type
+		df = pd.read_csv(csv_path, dtype = str)
 		df["source_file"] = str(csv_path.relative_to(PROJECT_ROOT))
 		frames.append(df)
 	return pd.concat(frames, ignore_index = True) if frames else pd.DataFrame()
@@ -131,39 +151,52 @@ def read_batch(batch_dir: Path) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Clean
 # ---------------------------------------------------------------------------
+def cast_column(series: pd.Series, kind: str) -> pd.Series:
+	"""Cast one raw column to its configured type; unparseable values become null."""
+	if kind == "date":
+		# format="ISO8601" accepts both "2026-10-25" and "2026-10-25 00:00:00+00:00";
+		# without it pandas infers one format from the first row and nulls the others.
+		return pd.to_datetime(series, utc = True, errors = "coerce", format = "ISO8601").dt.date
+	if kind == "timestamp":
+		return pd.to_datetime(series, utc = True, errors = "coerce", format = "ISO8601")
+	if kind == "float":
+		return pd.to_numeric(series, errors = "coerce").astype("float64")
+	if kind == "int":
+		return pd.to_numeric(series, errors = "coerce").round().astype("Int64")
+	if kind == "bool":
+		return series.map(lambda v: str(v).strip().lower() in ("true", "1", "yes") if pd.notna(v) else None).astype("boolean")
+	# string: trim whitespace, empty -> null
+	text = series.astype("object").where(series.notna())
+	text = text.map(lambda v: str(v).strip() if pd.notna(v) else None)
+	return text.where(text != "")
+
+
 def clean(df: pd.DataFrame) -> pd.DataFrame:
-	"""Boilerplate cleaning rules; extend as the dataset's quirks become known."""
+	"""Generic cleaning driven by staging.columns / key_columns / checks."""
 	start = len(df)
 	df = df.copy()
 	df.columns = [c.strip().lower() for c in df.columns]
 
-	missing = set(KEY_COLUMNS + ATTRIBUTE_COLUMNS) - set(df.columns)
+	missing = set(COLUMN_TYPES) - set(df.columns)
 	if missing:
 		raise ValueError(f"Raw batch is missing expected columns: {sorted(missing)}")
 
-	# Types. format="ISO8601" accepts both "2026-10-25" and "2026-10-25 00:00:00+00:00";
-	# without it pandas infers one format from the first row and nulls the others.
-	df["date"] = pd.to_datetime(df["date"], utc = True, errors = "coerce", format = "ISO8601").dt.date
-	for col in TIMESTAMP_COLUMNS:
-		df[col] = pd.to_datetime(df[col], utc = True, errors = "coerce", format = "ISO8601")
-	for col in ["latitude", "longitude"] + MEASURE_COLUMNS:
-		df[col] = pd.to_numeric(df[col], errors = "coerce")
+	for col, kind in COLUMN_TYPES.items():
+		df[col] = cast_column(df[col], kind)
+	if FLOAT_DECIMALS is not None and FLOAT_COLUMNS:
+		df[FLOAT_COLUMNS] = df[FLOAT_COLUMNS].round(FLOAT_DECIMALS)
 
-	# Rounding
-	df[["latitude", "longitude"]] = df[["latitude", "longitude"]].round(COORD_DECIMALS)
-	df[MEASURE_COLUMNS] = df[MEASURE_COLUMNS].round(MEASURE_DECIMALS)
-
-	# Drop rows without a usable key, or with no measurements at all
+	# Drop rows without a usable key, or with nothing in the configured value columns
 	df = df.dropna(subset = KEY_COLUMNS)
-	df = df.dropna(subset = [c for c in ATTRIBUTE_COLUMNS if c != "elevation"], how = "all")
+	df = df.dropna(subset = DROP_IF_ALL_NULL, how = "all")
 
-	# Sanity checks: invalidate impossible values rather than dropping the whole row
-	if "rain_sum" in df:
-		df.loc[df["rain_sum"] < 0, "rain_sum"] = None
-	if {"temperature_2m_min", "temperature_2m_max"} <= set(df.columns):
-		swapped = df["temperature_2m_min"] > df["temperature_2m_max"]
-		if swapped.any():
-			print(f"  WARNING: {swapped.sum()} rows with temperature_2m_min > temperature_2m_max")
+	# Configured checks: invalidate impossible values rather than dropping the whole row
+	for col in CHECKS.get("non_negative", []):
+		df.loc[df[col] < 0, col] = None
+	for low, high in CHECKS.get("less_or_equal", []):
+		violations = df[low] > df[high]
+		if violations.any():
+			print(f"  WARNING: {violations.sum()} rows with {low} > {high}")
 
 	# One row per business key (keep the last occurrence within the batch)
 	df = df.drop_duplicates(subset = KEY_COLUMNS, keep = "last")
@@ -174,17 +207,21 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 	return df.reset_index(drop = True)
 
 
+def hash_value(value, kind: str) -> str:
+	if pd.isna(value):
+		return ""
+	if kind in ("timestamp", "date"):
+		return value.isoformat()
+	if kind == "float":
+		return repr(float(value))
+	if kind == "int":
+		return repr(int(value))
+	return str(value)
+
+
 def add_record_hash(df: pd.DataFrame) -> pd.DataFrame:
 	def row_hash(row) -> str:
-		parts = []
-		for col in ATTRIBUTE_COLUMNS:
-			value = row[col]
-			if pd.isna(value):
-				parts.append("")
-			elif col in TIMESTAMP_COLUMNS:
-				parts.append(value.isoformat())
-			else:
-				parts.append(repr(float(value)))
+		parts = [hash_value(row[col], COLUMN_TYPES[col]) for col in ATTRIBUTE_COLUMNS]
 		return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 	df = df.copy()
@@ -241,7 +278,7 @@ def main():
 	table = get_table()
 	last_batch_id = table.properties.get(WATERMARK_PROPERTY)
 	batches = find_new_batches(last_batch_id)
-	print(f"Config: {CONFIG['_path']}")
+	print(f"Config: {CONFIG['_path']} (dataset: {CONFIG.get('dataset')})")
 	print(f"Watermark: {last_batch_id or '(none)'} -> {len(batches)} new raw batch(es) in {RAW_DIR.relative_to(PROJECT_ROOT)}")
 
 	for batch_dir in batches:

@@ -1,4 +1,4 @@
-"""Tests for pipeline_layers/20_staging/weather_staging.py: clean() and apply_scd2()."""
+"""Tests for pipeline_layers/20_staging/build_staging.py (with the weather config): clean() and apply_scd2()."""
 
 from datetime import date, datetime, timezone
 
@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 import lakehouse
-import weather_staging as ws
+import build_staging as ws
 
 BATCH_1 = "20261101T000000Z"
 BATCH_2 = "20261102T000000Z"
@@ -71,7 +71,7 @@ class TestClean:
 		assert out.loc[0, "date"] == date(2026, 10, 25)
 		assert isinstance(out["sunrise"].dtype, pd.DatetimeTZDtype) and str(out["sunrise"].dt.tz) == "UTC"
 		assert out.loc[0, "sunrise"] == pd.Timestamp("2026-10-24 19:23:20", tz = "UTC")
-		for col in ["latitude", "longitude", *ws.MEASURE_COLUMNS]:
+		for col in ["latitude", "longitude", *ws.FLOAT_COLUMNS]:
 			assert pd.api.types.is_float_dtype(out[col]), col
 
 	def test_parses_mixed_date_formats_in_one_batch(self):
