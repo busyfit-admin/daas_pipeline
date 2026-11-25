@@ -1,9 +1,12 @@
 """
 Raw layer: pull daily weather from Open-Meteo for a grid of points and land one CSV per point.
 
-  data/10_raw/weather/<YYYYmmddTHHMMSSZ>/weather_<lat>_<lon>.csv    (one folder per run = one batch)
+All settings (API, region, variables, folders) come from config/weather.yaml.
+
+  <raw.dir>/<batch_id>/<raw.file_prefix>_<lat>_<lon>.csv    (one folder per run = one batch)
 """
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,46 +16,26 @@ import pandas as pd
 import requests_cache
 from retry_requests import retry
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+from config import CONFIG, PROJECT_ROOT, resolve  # noqa: E402
+
 # ---------------------------------------------------------------------------
-# Settings (candidates to move into config/weather.yaml later)
+# Settings from config
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-API_URL = "https://api.open-meteo.com/v1/forecast"
-PAST_DAYS = 31
-CACHE_FILE = PROJECT_ROOT / "data" / "_cache" / "openmeteo"
-CACHE_EXPIRE_SECONDS = 3600
-RETRIES = 5
-BACKOFF_FACTOR = 0.2
-
-REGION = {
-	"name": "melbourne",
-	"south": -38.06,
-	"west": 144.71,
-	"north": -37.56,
-	"east": 145.21,
-	"grid_step_degrees": 0.25,
-}
-
-# Daily variables, requested and read back in this order. "timestamp" values are
-# returned as int64 epoch seconds; everything else as floats.
-DAILY_VARIABLES = {
-	"sunrise": "timestamp",
-	"sunset": "timestamp",
-	"rain_sum": "float",
-	"temperature_2m_max": "float",
-	"temperature_2m_min": "float",
-}
-
-RAW_DIR = PROJECT_ROOT / "data" / "10_raw" / "weather"
-RAW_FILE_PREFIX = "weather"
+API = CONFIG["api"]
+REGION = CONFIG["region"]
+DAILY_VARIABLES = CONFIG["daily_variables"]  # name -> "timestamp" | "float", in request order
+RAW_DIR = resolve(CONFIG["raw"]["dir"])
+RAW_FILE_PREFIX = CONFIG["raw"]["file_prefix"]
+BATCH_ID_FORMAT = CONFIG["batch_id_format"]
+CACHE_FILE = resolve(API["cache"]["file"])
 
 # ---------------------------------------------------------------------------
 # Open-Meteo client with cache and retry on error
 # ---------------------------------------------------------------------------
 CACHE_FILE.parent.mkdir(parents = True, exist_ok = True)
-cache_session = requests_cache.CachedSession(str(CACHE_FILE), expire_after = CACHE_EXPIRE_SECONDS)
-retry_session = retry(cache_session, retries = RETRIES, backoff_factor = BACKOFF_FACTOR)
+cache_session = requests_cache.CachedSession(str(CACHE_FILE), expire_after = API["cache"]["expire_after_seconds"])
+retry_session = retry(cache_session, retries = API["retry"]["retries"], backoff_factor = API["retry"]["backoff_factor"])
 openmeteo = openmeteo_requests.Client(session = retry_session)
 
 # Grid of points inside the region (bounding-box calls aren't supported by the "best_match" model)
@@ -65,13 +48,15 @@ params = {
 	"latitude": [float(lat) for lat, _ in grid],
 	"longitude": [float(lon) for _, lon in grid],
 	"daily": list(DAILY_VARIABLES),
-	"past_days": PAST_DAYS,
+	"past_days": API["past_days"],
+	**(API.get("extra_params") or {}),
 }
+print(f"Config: {CONFIG['_path']}")
 print(f"Requesting {len(grid)} points in {REGION['name']} with {len(DAILY_VARIABLES)} daily variables")
-responses = openmeteo.weather_api(API_URL, params = params)
+responses = openmeteo.weather_api(API["url"], params = params)
 
 # Raw landing zone: one folder per run
-LOAD_TS = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+LOAD_TS = datetime.now(timezone.utc).strftime(BATCH_ID_FORMAT)
 batch_dir = RAW_DIR / LOAD_TS
 batch_dir.mkdir(parents = True, exist_ok = True)
 

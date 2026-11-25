@@ -1,0 +1,56 @@
+# Weather pipeline configuration: the single place for all pipeline settings.
+# Paths are relative to the project root. Select another file with PIPELINE_CONFIG=...
+
+dataset: weather
+
+# Raw batch folder names; both layers use this to name and recognise batches
+batch_id_format: "%Y%m%dT%H%M%SZ"
+
+# --- Source API -------------------------------------------------------------
+api:
+  url: https://api.open-meteo.com/v1/forecast
+  past_days: 31
+  cache:
+    file: data/_cache/openmeteo
+    expire_after_seconds: 3600
+  retry:
+    retries: 5
+    backoff_factor: 0.2
+  extra_params: {}          # any additional Open-Meteo query params, e.g. {timezone: Australia/Melbourne}
+
+# --- Region: requested as a grid of points ------------------------------------
+region:
+  name: melbourne
+  south: -38.06
+  west: 144.71
+  north: -37.56
+  east: 145.21
+  grid_step_degrees: 0.25
+
+# --- Daily variables ----------------------------------------------------------
+# Requested from the API and read back in this order.
+# type: timestamp (epoch seconds -> UTC timestamp) | float
+daily_variables:
+  sunrise: timestamp
+  sunset: timestamp
+  rain_sum: float
+  temperature_2m_max: float
+  temperature_2m_min: float
+
+# --- 10_raw layer ---------------------------------------------------------------
+raw:
+  dir: data/10_raw/weather
+  file_prefix: weather        # files land as <file_prefix>_<lat>_<lon>.csv
+
+# --- 20_staging layer -----------------------------------------------------------
+staging:
+  catalog:
+    name: local
+    db: data/20_staging/catalog.db
+    warehouse: data/20_staging/warehouse
+  namespace: staging
+  table: weather_daily
+  watermark_property: staging.last_batch_id
+  key_columns: [latitude, longitude, date]   # one row per location per day
+  coord_decimals: 4                          # stabilise float coordinates so keys compare reliably
+  measure_decimals: 4                        # strip float32 noise so record hashes are stable
