@@ -1,5 +1,9 @@
 numpy
 openmeteo-requests
 pandas
+pyarrow
+pyiceberg[sql-sqlite,pyarrow]
+pytest
+pyyaml
 requests-cache
 retry-requests
