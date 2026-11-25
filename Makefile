@@ -9,6 +9,7 @@
 #   make query SQL="select count(*) from weather_daily"
 #   make query FILE=queries/top20_current.sql       run a saved .sql file
 #   make sample                                     top 20 rows of every current table
+#   make sample-gold                                sample checks on the gold layer
 #   make pipeline PIPELINE_CONFIG=config/other.yaml use a config file directly
 
 DATASET         ?= weather
@@ -27,7 +28,7 @@ QUERY_SCRIPT   := tools/query_current.py
 LAYER ?= current
 
 .DEFAULT_GOAL := help
-.PHONY: help build raw staging current gold pipeline all query sample test shell bash
+.PHONY: help build raw staging current gold pipeline all query sample sample-gold test shell bash
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -62,6 +63,9 @@ query: ## DuckDB SQL on the current layer (SQL="..." one query, FILE=x.sql a fil
 
 sample: ## Top 20 rows from each current table (queries/top20_current.sql)
 	$(MAKE) query FILE=queries/top20_current.sql
+
+sample-gold: ## Sample checks on the gold layer (queries/gold_checks.sql)
+	$(MAKE) query LAYER=gold FILE=queries/gold_checks.sql
 
 test: ## Run the test suite
 	$(RUN) -m pytest
