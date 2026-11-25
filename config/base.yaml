@@ -9,3 +9,21 @@ lakehouse:
   catalog_name: local
   catalog_db: data/catalog.db
   root: data                  # each table lives at <root>/<layer dir>/<table>
+
+# --- 40_gold layer: SQL models over the current layer of all datasets -----------
+# Models run in DuckDB, in the order listed, and each is written to an Iceberg table
+# <namespace>.<model> (one snapshot per model per run). Inside a model, reference:
+#   current.<table>   current-layer tables (all datasets)
+#   seeds.<seed>      CSV reference data from seeds_dir
+#   gold.<model>      models built earlier in this run
+gold:
+  dir: 40_gold
+  namespace: gold
+  source_namespace: current
+  models_dir: pipeline_layers/40_gold/models
+  seeds_dir: pipeline_layers/40_gold/seeds
+  models:
+    - weather_daily                             # aggregate: regional weather per day
+    - plant_summary                             # aggregate: per plant, vs. its water needs
+    - garden_daily                              # aggregate: whole garden per day
+    - weather_and_plant_watering_daily_checks   # fact: plant x day, watering vs. needs and weather
