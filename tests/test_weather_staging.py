@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 import pandas as pd
 import pytest
 
+import lakehouse
 import weather_staging as ws
 
 BATCH_1 = "20261101T000000Z"
@@ -56,8 +57,8 @@ def versions(table, row: dict) -> pd.DataFrame:
 @pytest.fixture
 def table(tmp_path, monkeypatch):
 	"""A fresh, empty Iceberg table in a temporary catalog for each test."""
-	monkeypatch.setattr(ws, "CATALOG_DB", tmp_path / "catalog.db")
-	monkeypatch.setattr(ws, "WAREHOUSE_DIR", tmp_path / "warehouse")
+	monkeypatch.setattr(lakehouse, "CATALOG_DB", tmp_path / "catalog.db")
+	monkeypatch.setattr(lakehouse, "LAKEHOUSE_ROOT", tmp_path / "data")
 	return ws.get_table()
 
 
@@ -292,8 +293,8 @@ class TestConfig:
 		assert ws.ALL_COLUMNS[-6:] == ws.SCD_COLUMNS
 
 	def test_paths_resolve_under_project_root(self):
-		from config import PROJECT_ROOT
-		for path in [ws.RAW_DIR, ws.CATALOG_DB, ws.WAREHOUSE_DIR]:
+		from config import CONFIG, PROJECT_ROOT
+		for path in [ws.RAW_DIR, lakehouse.CATALOG_DB, lakehouse.table_location(CONFIG["staging"])]:
 			assert path.is_absolute() and PROJECT_ROOT in path.parents
 
 	def test_pipeline_config_env_var_selects_file(self, tmp_path, monkeypatch):
