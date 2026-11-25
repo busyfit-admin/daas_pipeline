@@ -2,6 +2,8 @@
 #
 #   make pipeline                                   raw -> staging -> current
 #   make raw | make staging | make current          one layer
+#   make query                                      DuckDB SQL prompt on the current layer
+#   make query SQL="select count(*) from weather_daily"
 #   make pipeline PIPELINE_CONFIG=config/other.yaml use another config file
 
 PIPELINE_CONFIG ?= config/weather.yaml
@@ -12,9 +14,12 @@ RUN     := $(COMPOSE) run --rm -e PIPELINE_CONFIG=$(PIPELINE_CONFIG) app
 RAW_SCRIPT     := pipeline_layers/10_ingest/weather_api.py
 STAGING_SCRIPT := pipeline_layers/20_staging/weather_staging.py
 CURRENT_SCRIPT := pipeline_layers/30_current/build_current.py
+QUERY_SCRIPT   := tools/query_current.py
+
+LAYER ?= current
 
 .DEFAULT_GOAL := help
-.PHONY: help build raw staging current pipeline test shell bash
+.PHONY: help build raw staging current pipeline query test shell bash
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -35,6 +40,9 @@ pipeline: ## Run raw -> staging -> current
 	$(MAKE) raw
 	$(MAKE) staging
 	$(MAKE) current
+
+query: ## DuckDB SQL on the current layer (SQL="..." to run one query, LAYER=staging for staging)
+	$(RUN) $(QUERY_SCRIPT) --layer $(LAYER) $(if $(SQL),-c "$(SQL)")
 
 test: ## Run the test suite
 	$(RUN) -m pytest
