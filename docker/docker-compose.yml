@@ -1,0 +1,15 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: daas-pipeline:latest
+    container_name: daas-pipeline
+    working_dir: /app
+    volumes:
+      # Mount the project root so code changes are picked up without rebuilding
+      - ..:/app
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
